@@ -1,0 +1,16 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gitops-fastapi-prod
+  namespace: argocd
+spec:
+  project: demo-project
+  source:
+    repoURL: 'https://github.com/YOUR_ORG/app-config'
+    targetRevision: main
+    path: overlays/prod
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: prod
+  # no automated sync; manual promotion recommended
+  syncPolicy: {}

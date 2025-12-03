@@ -1,0 +1,7 @@
+resources:
+  - deployment.yaml
+  - service.yaml
+
+images:
+  - name: REPLACE_ME_IMAGE
+    newTag: "latest"

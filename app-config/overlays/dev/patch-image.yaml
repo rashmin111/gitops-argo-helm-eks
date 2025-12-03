@@ -1,0 +1,10 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitops-fastapi
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          image: "REPLACE_ME_ECR_REPO:REPLACE_TAG"

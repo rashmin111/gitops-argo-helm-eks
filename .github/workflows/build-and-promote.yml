@@ -1,0 +1,123 @@
+name: Build, Test, Push & Promote
+
+on:
+  push:
+    branches: ["main"]
+
+env:
+  AWS_REGION: YOUR_AWS_REGION                # e.g., us-east-1
+  ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}  # e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com/devops-fastapi
+  CONFIG_REPO: your-org/app-config           # update to your org and repo
+
+permissions:
+  contents: read
+  id-token: write  # required if using OIDC
+
+jobs:
+  test:
+    name: Run tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+      - name: Install deps & run tests
+        run: |
+          pip install -r app/requirements.txt
+          pip install pytest
+          pytest -q
+
+  build_and_push:
+    name: Build & Push image
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (optional OIDC)
+        if: secrets.AWS_ROLE_TO_ASSUME != ''
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build and push Docker image
+        env:
+          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
+        run: |
+          IMAGE_TAG=${GITHUB_SHA}
+          echo "Building image ${ECR_REPOSITORY}:${IMAGE_TAG}"
+          docker build -t ${ECR_REPOSITORY}:${IMAGE_TAG} .
+          docker push ${ECR_REPOSITORY}:${IMAGE_TAG}
+          echo "IMAGE=${ECR_REPOSITORY}:${IMAGE_TAG}" >> $GITHUB_OUTPUT
+
+  promote_to_config:
+    name: Update app-config (dev overlay)
+    needs: build_and_push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout app-config repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CONFIG_REPO }}
+          token: ${{ secrets.GH_APP_CONFIG_TOKEN }}    # personal access token or PAT with repo write
+          path: app-config
+
+      - name: Replace image tag in dev overlay
+        env:
+          IMAGE: ${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          cd app-config/overlays/dev
+          # update patch-image.yaml (the file contains placeholder REPLACE_TAG)
+          if grep -q "REPLACE_TAG" patch-image.yaml; then
+            sed -i "s|REPLACE_TAG|${{ github.sha }}|g" patch-image.yaml
+          else
+            # fallback: replace image line containing repo
+            sed -i "s|image: .*|image: \"${IMAGE}\"|g" patch-image.yaml || true
+          fi
+          cd ../..
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          git add .
+          git commit -m "ci: promote image ${{ github.sha }} to dev"
+          git push origin HEAD:main
+
+  create_prod_pr:
+    name: Create PR to promote to prod (optional/manual approval)
+    if: always()
+    needs: promote_to_config
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout app-config repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CONFIG_REPO }}
+          token: ${{ secrets.GH_APP_CONFIG_TOKEN }}
+          path: app-config
+
+      - name: Create branch & update prod overlay
+        run: |
+          set -euo pipefail
+          cd app-config
+          BRANCH="ci/promote/${GITHUB_SHA}"
+          git checkout -b ${BRANCH}
+          sed -i "s|REPLACE_TAG|${GITHUB_SHA}|g" overlays/prod/patch-image.yaml || true
+          git add overlays/prod/patch-image.yaml
+          git commit -m "ci: promote image ${GITHUB_SHA} to prod"
+          git push --set-upstream origin ${BRANCH}
+
+      - name: Open PR to main
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GH_APP_CONFIG_TOKEN }}
+          title: "chore: promote image ${GITHUB_SHA} to prod"
+          body: "Automated promotion PR for image ${GITHUB_SHA}"
+          base: main
+          head: "ci/promote/${GITHUB_SHA}"

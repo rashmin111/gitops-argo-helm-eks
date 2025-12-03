@@ -1,0 +1,18 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitops-fastapi
+spec:
+  replicas: 4
+  template:
+    spec:
+      containers:
+        - name: app
+          image: "REPLACE_ME_ECR_REPO:REPLACE_TAG"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
